@@ -1,0 +1,39 @@
+- name: Decomision Voting App
+  hosts: localhost
+  tasks:
+    - name: Get EC2 instances ids
+      ec2_instance_facts:
+        region: us-west-2
+        filters:
+          "tag:application": "voteapp"
+      register: voteappec2
+
+
+    - name: Terminate instances for vote app
+      ec2:
+        state: absent
+        region: us-west-2
+        instance_ids: |
+          {% set instances = [] %}
+          {% for item in voteappec2.instances -%}
+            {{ instances.append(item.instance_id) }}
+          {%- endfor %}
+          {{ instances }}
+
+    - name: Get VoteApp Security group id
+      ec2_group_facts:
+        region: us-west-2
+        filters:
+          group-name: vappsg
+      register: vappid
+
+    - name: sleep 30 seconds for dependencies get removed
+      wait_for:
+        timeout: 30
+      delegate_to: localhost
+
+    - name: Delete Vote App security group by its id
+      ec2_group:
+        region: us-west-2
+        group_id: '{{ vappid.security_groups[0].group_id }}'
+        state: absent

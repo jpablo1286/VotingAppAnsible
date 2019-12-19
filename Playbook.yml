@@ -1,0 +1,124 @@
+---
+
+- name: VoteApp Infra
+  hosts: localhost
+  tasks:
+    - name: Create security group
+      ec2_group:
+        name: vappsg
+        description: security group for vote app nodes
+        region: us-west-2
+        rules:
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            cidr_ip: "0.0.0.0/0"
+          - proto: tcp
+            from_port: 443
+            to_port: 443
+            cidr_ip: "0.0.0.0/0"
+          - proto: tcp
+            from_port: 8000
+            to_port: 8000
+            cidr_ip: "0.0.0.0/0"
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: "0.0.0.0/0"
+      register: vappgrp
+
+
+    - name: Create EC2 instance
+      ec2:
+        key_name: votingapp
+        instance_type: t2.medium
+        image: ami-04b762b4289fba92b
+        region: us-west-2
+        group_id:
+          - "{{ vappgrp.group_id }}"
+        wait: yes
+        instance_tags:
+          application: voteapp
+        exact_count: 1
+        count_tag:
+          application: voteapp
+      register: voteappec2_instances
+
+    - name: Store VoteApp EC2 instance IPs
+      add_host:
+        hostname: "{{ item.private_ip }}"
+        groupname: voteappec2_instance_ips
+      with_items: "{{ voteappec2_instances.tagged_instances }}"
+
+    - name: Wait Vote App servers come online
+      wait_for:
+        host: "{{ item.private_ip }}"
+        port: 22
+        timeout: 180
+      with_items: "{{ voteappec2_instances.tagged_instances }}"
+
+    - name: Add VoteApp instances as known hosts
+      known_hosts:
+        name: "{{ item.private_ip }}"
+        key: "{{ lookup('pipe', 'ssh-keyscan -t rsa ' + item.private_ip) }}"
+      with_items: "{{ voteappec2_instances.tagged_instances }}"
+
+# Provicioning web instance
+- name: Install docker and docker-compose
+  hosts: voteappec2_instance_ips
+  remote_user: ec2-user
+  become: true
+  tasks:
+    - name: Install prerequisits
+      yum:
+        name:
+           - yum-utils
+           - device-mapper-persistent-data
+           - lvm2
+           - git
+           - python-pip 
+        state: present
+
+    - name: Install Docker
+      yum:
+        name:
+           - docker
+        state: present
+    
+    - name: adding existing user ec2-user to group docker
+      user:
+        name: ec2-user
+        groups: docker
+        append: yes
+    
+    - name: Download docker
+      get_url:
+        url: https://github.com/docker/compose/releases/download/1.22.0/docker-compose-Linux-x86_64
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+
+    - name: enable docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: get voteapp docker-compose repo
+      git:
+        repo: 'https://github.com/jpablo1286/VotingAppDocker.git'
+        dest: /opt/voteapp
+
+    - name: Change the working directory to somedir/ before executing the command.
+      shell: /usr/local/bin/docker-compose up -d
+      args:
+        chdir: /opt/voteapp/
+ 
+- name: Adding elastic IP
+  hosts: localhost
+  tasks:
+    - name: associate an elastic IP to the instance
+      ec2_eip:
+        device_id: "{{ item.id }}"
+        region: us-west-2
+        ip: 44.227.142.101
+      with_items: "{{ voteappec2_instances.tagged_instances }}"
